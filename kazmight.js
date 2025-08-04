@@ -5,7 +5,7 @@ const { ethers } = require('ethers');
 const readline = require('readline');
 const util = require('util');
 
-// --- Konfigurasi dan Logger ---
+// --- Configurations and Logger ---
 
 const colors = {
   reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[31m", white: "\x1b[37m", bold: "\x1b[1m", blue: "\x1b[34m",
@@ -56,20 +56,27 @@ const delayWithCountdown = async (seconds) => {
     logger.countdown(`Jeda sebelum transaksi berikutnya: ${i} detik...`);
     await sleep(1000);
   }
-  process.stdout.write('\n'); // Tambahkan baris baru setelah hitungan mundur selesai
+  process.stdout.write('\n');
 };
 
 const RPC_URL = "https://finney.uomi.ai";
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
 
-if (!PRIVATE_KEY) {
-  logger.error("PRIVATE_KEY tidak ditemukan di file .env. Pastikan file .env sudah diatur.");
+// Read private keys from .env file using indexed keys
+let privateKeys = [];
+let i = 1;
+while (process.env[`PRIVATE_KEYS_${i}`]) {
+  privateKeys.push(process.env[`PRIVATE_KEYS_${i}`]);
+  i++;
+}
+
+if (privateKeys.length === 0) {
+  logger.error("No private keys found in environment variables. Please configure the .env file with PRIVATE_KEYS_1, PRIVATE_KEYS_2, etc.");
   process.exit(1);
 }
 
-// Alamat Kontrak Token
-// UOMI adalah native token, jadi tidak punya alamat kontrak.
-// Alamat "0x00..." digunakan sebagai placeholder.
+// Token contract addresses
+// UOMI is the native token, so it does not have a contract address.
+// The "0x00..." address is used as a placeholder.
 const TOKENS = {
   "UOMI": {
     isNative: true,
@@ -106,58 +113,56 @@ const TOKENS = {
 const SWAP_CONTRACT_ADDRESS = "0x197EEAd5Fe3DB82c4Cd55C5752Bc87AEdE11f230";
 const LIQUIDITY_CONTRACT_ADDRESS = "0x906515Dc7c32ab887C8B8Dce6463ac3a7816Af38";
 
-// --- ABIs yang Dioptimalkan ---
-// ABI untuk kontrak swap, hanya mencakup fungsi `execute` yang relevan.
+// --- Optimized ABIs ---
+// ABI for the swap contract, only including the relevant `execute` function.
 const SWAP_ABI = [{"inputs":[{"internalType":"bytes","name":"commands","type":"bytes"},{"internalType":"bytes[]","name":"inputs","type":"bytes[]"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"execute","outputs":[],"stateMutability":"payable","type":"function"}];
-// ABI untuk kontrak add liquidity, hanya mencakup fungsi `mint` yang relevan.
+// ABI for the add liquidity contract, only including the relevant `mint` function.
 const LIQUIDITY_ABI = [{"inputs":[{"components":[{"internalType":"address","name":"token0","type":"address"},{"internalType":"address","name":"token1","type":"address"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"},{"internalType":"uint256","name":"amount0Desired","type":"uint256"},{"internalType":"uint256","name":"amount1Desired","type":"uint256"},{"internalType":"uint256","name":"amount0Min","type":"uint256"},{"internalType":"uint256","name":"amount1Min","type":"uint256"},{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"internalType":"struct INonfungiblePositionManager.MintParams","name":"params","type":"tuple"}],"name":"mint","outputs":[{"internalType":"uint256","name":"tokenId","type":"uint256"},{"internalType":"uint128","name":"liquidity","type":"uint128"},{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"}],"stateMutability":"payable","type":"function"}];
-// ABI untuk persetujuan token ERC20.
+// ABI for ERC20 token approval.
 const ERC20_ABI_APPROVE = [{"constant":false,"inputs":[{"name":"_spender","type":"address"},{"name":"_value","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"type":"function"}];
-// ABI untuk mendapatkan saldo token ERC20.
+// ABI for getting ERC20 token balance.
 const ERC20_ABI_BALANCE = [{"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}];
 
 
-// Inisialisasi Provider dan Wallet
+// Initialize Provider
 const provider = new ethers.JsonRpcProvider(RPC_URL);
-const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-// Kontrak Instances
-const swapContract = new ethers.Contract(SWAP_CONTRACT_ADDRESS, SWAP_ABI, wallet);
-const liquidityContract = new ethers.Contract(LIQUIDITY_CONTRACT_ADDRESS, LIQUIDITY_ABI, wallet);
+// Create wallet instances for each private key
+const wallets = privateKeys.map(key => new ethers.Wallet(key, provider));
 
-// --- Fungsi Pembantu ---
-const getERC20Contract = (tokenAddress) => {
+// --- Helper Functions ---
+const getERC20Contract = (tokenAddress, wallet) => {
   return new ethers.Contract(tokenAddress, ERC20_ABI_APPROVE, wallet);
 };
 
-const getTokenBalance = async (token) => {
+const getTokenBalance = async (token, walletAddress) => {
     if (token.isNative) {
-        return await provider.getBalance(wallet.address);
+        return await provider.getBalance(walletAddress);
     } else {
         const contract = new ethers.Contract(token.address, ERC20_ABI_BALANCE, provider);
-        return await contract.balanceOf(wallet.address);
+        return await contract.balanceOf(walletAddress);
     }
 };
 
-const approveToken = async (token, spenderAddress, amount) => {
-  if (token.isNative) return; // Token native tidak memerlukan approval
+const approveToken = async (token, spenderAddress, amount, wallet) => {
+  if (token.isNative) return;
 
-  logger.step(`Memeriksa persetujuan untuk ${token.symbol}...`);
-  const tokenContract = getERC20Contract(token.address);
+  logger.step(`[${wallet.address}] Memeriksa persetujuan untuk ${token.symbol}...`);
+  const tokenContract = getERC20Contract(token.address, wallet);
   const allowance = await tokenContract.allowance(wallet.address, spenderAddress);
 
   if (allowance < amount) {
-    logger.loading(`Menyetujui ${ethers.formatUnits(amount, token.decimals)} ${token.symbol} untuk spender ${spenderAddress}...`);
+    logger.loading(`[${wallet.address}] Menyetujui ${ethers.formatUnits(amount, token.decimals)} ${token.symbol} untuk spender ${spenderAddress}...`);
     try {
       const tx = await tokenContract.approve(spenderAddress, amount);
       await tx.wait();
-      logger.success(`Transaksi persetujuan berhasil: ${tx.hash}`);
+      logger.success(`[${wallet.address}] Transaksi persetujuan berhasil: ${tx.hash}`);
     } catch (error) {
-      logger.error("Gagal melakukan persetujuan:", error);
+      logger.error(`[${wallet.address}] Gagal melakukan persetujuan:`, error);
       throw error;
     }
   } else {
-    logger.info("Persetujuan sudah cukup.");
+    logger.info(`[${wallet.address}] Persetujuan sudah cukup.`);
   }
 };
 
@@ -173,13 +178,13 @@ const buildSwapCommands = (path, amountIn, amountOutMin) => {
   return { commands, inputs };
 };
 
-// --- Fungsi Utama Transaksi ---
-async function performSwap(tokenIn, tokenOut, amountInWei) {
-  logger.info(`Memulai Swap: ${tokenIn.symbol} -> ${tokenOut.symbol} ...`);
+// --- Main Transaction Functions ---
+async function performSwap(tokenIn, tokenOut, amountInWei, wallet) {
+  logger.info(`[${wallet.address}] Memulai Swap: ${tokenIn.symbol} -> ${tokenOut.symbol} ...`);
   
   try {
     if (!tokenIn.isNative) {
-      await approveToken(tokenIn, SWAP_CONTRACT_ADDRESS, amountInWei);
+      await approveToken(tokenIn, SWAP_CONTRACT_ADDRESS, amountInWei, wallet);
     }
     
     const deadline = Math.floor(Date.now() / 1000) + 60 * 5;
@@ -196,24 +201,27 @@ async function performSwap(tokenIn, tokenOut, amountInWei) {
       txOptions.value = amountInWei;
     }
     
-    logger.loading("Mengirim transaksi swap...");
-    const tx = await swapContract.execute(commands, inputs, deadline, txOptions);
-    logger.success(`Transaksi swap terkirim!`);
+    // Create a new contract instance with the specific wallet for this transaction
+    const specificWalletSwapContract = swapContract.connect(wallet);
+
+    logger.loading(`[${wallet.address}] Mengirim transaksi swap...`);
+    const tx = await specificWalletSwapContract.execute(commands, inputs, deadline, txOptions);
+    logger.success(`[${wallet.address}] Transaksi swap terkirim!`);
     
     await tx.wait();
-    logger.success("Transaksi swap berhasil dikonfirmasi!");
+    logger.success(`[${wallet.address}] Transaksi swap berhasil dikonfirmasi!`);
     logger.info(`Lihat di Explorer: https://explorer.uomi.ai/tx/${tx.hash}`);
   } catch (error) {
-    logger.error("Gagal melakukan swap:", error);
+    logger.error(`[${wallet.address}] Gagal melakukan swap:`, error);
   }
 }
 
-async function performAddLiquidity(token0, token1, amount0Wei, amount1Wei) {
-  logger.info(`Memulai Tambah Likuiditas: ${token0.symbol} & ${token1.symbol} ...`);
+async function performAddLiquidity(token0, token1, amount0Wei, amount1Wei, wallet) {
+  logger.info(`[${wallet.address}] Memulai Tambah Likuiditas: ${token0.symbol} & ${token1.symbol} ...`);
   
   try {
-    await approveToken(token0, LIQUIDITY_CONTRACT_ADDRESS, amount0Wei);
-    await approveToken(token1, LIQUIDITY_CONTRACT_ADDRESS, amount1Wei);
+    await approveToken(token0, LIQUIDITY_CONTRACT_ADDRESS, amount0Wei, wallet);
+    await approveToken(token1, LIQUIDITY_CONTRACT_ADDRESS, amount1Wei, wallet);
 
     const deadline = Math.floor(Date.now() / 1000) + 60 * 5;
     const recipient = wallet.address;
@@ -237,113 +245,128 @@ async function performAddLiquidity(token0, token1, amount0Wei, amount1Wei) {
       deadline: deadline,
     };
     
-    logger.loading("Mengirim transaksi tambah likuiditas...");
-    const tx = await liquidityContract.mint(mintParams, {
+    const specificWalletLiquidityContract = liquidityContract.connect(wallet);
+
+    logger.loading(`[${wallet.address}] Mengirim transaksi tambah likuiditas...`);
+    const tx = await specificWalletLiquidityContract.mint(mintParams, {
       gasLimit: 1000000
     });
     
-    logger.success("Transaksi tambah likuiditas terkirim!");
+    logger.success(`[${wallet.address}] Transaksi tambah likuiditas terkirim!`);
     await tx.wait();
-    logger.success("Transaksi tambah likuiditas berhasil dikonfirmasi!");
+    logger.success(`[${wallet.address}] Transaksi tambah likuiditas berhasil dikonfirmasi!`);
     logger.info(`Lihat di Explorer: https://explorer.uomi.ai/tx/${tx.hash}`);
   } catch (error) {
-    logger.error("Gagal menambahkan likuiditas:", error);
+    logger.error(`[${wallet.address}] Gagal menambahkan likuiditas:`, error);
   }
 }
 
-// --- Logika Interaktif CLI ---
+// --- Interactive CLI Logic ---
 async function runInteractiveMode() {
   showBanner();
-  const accountAddress = await wallet.getAddress();
-  logger.info(`Alamat dompet terhubung: ${accountAddress}\n`);
 
-  const tokensWithBalances = await Promise.all(Object.keys(TOKENS).map(async (key) => {
-    const token = TOKENS[key];
-    const balance = await getTokenBalance(token);
-    return { ...token, balance: balance };
+  const accountsWithBalances = await Promise.all(wallets.map(async (wallet) => {
+    const address = await wallet.getAddress();
+    const tokensWithBalances = await Promise.all(Object.keys(TOKENS).map(async (key) => {
+      const token = TOKENS[key];
+      const balance = await getTokenBalance(token, address);
+      return { ...token, balance: balance };
+    }));
+    return { address, balances: tokensWithBalances };
   }));
 
-  logger.step("Memuat saldo token Anda...");
-  tokensWithBalances.forEach(t => {
-    if (t.balance > 0) {
-      logger.info(`Saldo ${t.symbol}: ${ethers.formatUnits(t.balance, t.decimals)}`);
-    }
+  logger.step("Memuat saldo token untuk semua akun...");
+  accountsWithBalances.forEach(account => {
+    logger.info(`Alamat dompet: ${account.address}`);
+    account.balances.forEach(t => {
+      if (t.balance > 0) {
+        logger.info(`  Saldo ${t.symbol}: ${ethers.formatUnits(t.balance, t.decimals)}`);
+      }
+    });
   });
-  console.log(""); // baris baru untuk jarak
+  console.log("");
 
-  // Minta pengguna untuk memilih mode
-  const mode = await question("Pilih mode (1: Swap, 2: Add Liquidity): ");
+  const selectedMode = await question("Pilih mode (1: Swap, 2: Add Liquidity): ");
+  let selectedWallets;
 
-  if (mode === '1') {
-    // LOGIKA SWAP
-    logger.step("Mode: SWAP");
-    const tokenInSymbol = await question(`Pilih token masuk (${Object.keys(TOKENS).join(', ')}): `);
-    const tokenOutSymbol = await question(`Pilih token keluar (${Object.keys(TOKENS).join(', ')}): `);
-    const percentage = parseFloat(await question(`Masukkan persentase jumlah untuk di swap (e.g., 50 untuk 50%): `));
-
-    if (isNaN(percentage) || percentage <= 0 || percentage > 100) {
-      logger.error("Persentase tidak valid.");
-      rl.close();
-      return;
-    }
-
-    const tokenIn = TOKENS[tokenInSymbol.toUpperCase()];
-    const tokenOut = TOKENS[tokenOutSymbol.toUpperCase()];
-
-    if (!tokenIn || !tokenOut) {
-      logger.error("Pilihan token tidak valid.");
-      rl.close();
-      return;
-    }
-
-    const tokenInBalance = await getTokenBalance(tokenIn);
-    const amountInWei = (tokenInBalance * BigInt(Math.round(percentage * 100))) / BigInt(10000);
-    
-    logger.info(`Anda akan menukar ${ethers.formatUnits(amountInWei, tokenIn.decimals)} ${tokenIn.symbol}.`);
-    
-    const delaySeconds = parseInt(await question(`Masukkan delay manual untuk transaksi ini dalam detik (misal: 10): `));
-    await delayWithCountdown(delaySeconds);
-
-    await performSwap(tokenIn, tokenOut, amountInWei);
-
-  } else if (mode === '2') {
-    // LOGIKA ADD LIQUIDITY
-    logger.step("Mode: ADD LIQUIDITY");
-    const token0Symbol = await question(`Pilih token pertama (${Object.keys(TOKENS).join(', ')}): `);
-    const token1Symbol = await question(`Pilih token kedua (${Object.keys(TOKENS).join(', ')}): `);
-    const percentage0 = parseFloat(await question(`Masukkan persentase jumlah ${token0Symbol} untuk ditambahkan (e.g., 50): `));
-    const percentage1 = parseFloat(await question(`Masukkan persentase jumlah ${token1Symbol} untuk ditambahkan (e.g., 50): `));
-
-    if (isNaN(percentage0) || percentage0 <= 0 || percentage0 > 100 || isNaN(percentage1) || percentage1 <= 0 || percentage1 > 100) {
-      logger.error("Persentase tidak valid.");
-      rl.close();
-      return;
-    }
-
-    const token0 = TOKENS[token0Symbol.toUpperCase()];
-    const token1 = TOKENS[token1Symbol.toUpperCase()];
-
-    if (!token0 || !token1) {
-      logger.error("Pilihan token tidak valid.");
-      rl.close();
-      return;
-    }
-
-    const token0Balance = await getTokenBalance(token0);
-    const token1Balance = await getTokenBalance(token1);
-    
-    const amount0Wei = (token0Balance * BigInt(Math.round(percentage0 * 100))) / BigInt(10000);
-    const amount1Wei = (token1Balance * BigInt(Math.round(percentage1 * 100))) / BigInt(10000);
-    
-    logger.info(`Anda akan menambahkan ${ethers.formatUnits(amount0Wei, token0.decimals)} ${token0.symbol} dan ${ethers.formatUnits(amount1Wei, token1.decimals)} ${token1.symbol}.`);
-    
-    const delaySeconds = parseInt(await question(`Masukkan delay manual untuk transaksi ini dalam detik (misal: 10): `));
-    await delayWithCountdown(delaySeconds);
-
-    await performAddLiquidity(token0, token1, amount0Wei, amount1Wei);
-
+  const runAllAccounts = await question("Jalankan untuk semua akun? (y/n): ");
+  if (runAllAccounts.toLowerCase() === 'y') {
+    selectedWallets = wallets;
   } else {
-    logger.error("Pilihan tidak valid.");
+    const accountIndex = parseInt(await question(`Pilih akun (1-${wallets.length}): `)) - 1;
+    if (isNaN(accountIndex) || accountIndex < 0 || accountIndex >= wallets.length) {
+      logger.error("Pilihan akun tidak valid.");
+      rl.close();
+      return;
+    }
+    selectedWallets = [wallets[accountIndex]];
+  }
+
+  for (const wallet of selectedWallets) {
+    if (selectedMode === '1') {
+      logger.step("Mode: SWAP");
+      const tokenInSymbol = await question(`Pilih token masuk (${Object.keys(TOKENS).join(', ')}): `);
+      const tokenOutSymbol = await question(`Pilih token keluar (${Object.keys(TOKENS).join(', ')}): `);
+      const percentage = parseFloat(await question(`Masukkan persentase jumlah untuk di swap (e.g., 50 untuk 50%): `));
+
+      if (isNaN(percentage) || percentage <= 0 || percentage > 100) {
+        logger.error("Persentase tidak valid.");
+        continue;
+      }
+
+      const tokenIn = TOKENS[tokenInSymbol.toUpperCase()];
+      const tokenOut = TOKENS[tokenOutSymbol.toUpperCase()];
+      
+      if (!tokenIn || !tokenOut) {
+        logger.error("Pilihan token tidak valid.");
+        continue;
+      }
+      
+      const tokenInBalance = await getTokenBalance(tokenIn, wallet.address);
+      const amountInWei = (tokenInBalance * BigInt(Math.round(percentage * 100))) / BigInt(10000);
+      
+      logger.info(`[${wallet.address}] Anda akan menukar ${ethers.formatUnits(amountInWei, tokenIn.decimals)} ${tokenIn.symbol}.`);
+      
+      const delaySeconds = parseInt(await question(`Masukkan delay manual untuk transaksi ini dalam detik (misal: 10): `));
+      await delayWithCountdown(delaySeconds);
+
+      await performSwap(tokenIn, tokenOut, amountInWei, wallet);
+
+    } else if (selectedMode === '2') {
+      logger.step("Mode: ADD LIQUIDITY");
+      const token0Symbol = await question(`Pilih token pertama (${Object.keys(TOKENS).join(', ')}): `);
+      const token1Symbol = await question(`Pilih token kedua (${Object.keys(TOKENS).join(', ')}): `);
+      const percentage0 = parseFloat(await question(`Masukkan persentase jumlah ${token0Symbol} untuk ditambahkan (e.g., 50): `));
+      const percentage1 = parseFloat(await question(`Masukkan persentase jumlah ${token1Symbol} untuk ditambahkan (e.g., 50): `));
+
+      if (isNaN(percentage0) || percentage0 <= 0 || percentage0 > 100 || isNaN(percentage1) || percentage1 <= 0 || percentage1 > 100) {
+        logger.error("Persentase tidak valid.");
+        continue;
+      }
+
+      const token0 = TOKENS[token0Symbol.toUpperCase()];
+      const token1 = TOKENS[token1Symbol.toUpperCase()];
+
+      if (!token0 || !token1) {
+        logger.error("Pilihan token tidak valid.");
+        continue;
+      }
+
+      const token0Balance = await getTokenBalance(token0, wallet.address);
+      const token1Balance = await getTokenBalance(token1, wallet.address);
+      
+      const amount0Wei = (token0Balance * BigInt(Math.round(percentage0 * 100))) / BigInt(10000);
+      const amount1Wei = (token1Balance * BigInt(Math.round(percentage1 * 100))) / BigInt(10000);
+      
+      logger.info(`[${wallet.address}] Anda akan menambahkan ${ethers.formatUnits(amount0Wei, token0.decimals)} ${token0.symbol} dan ${ethers.formatUnits(amount1Wei, token1.decimals)} ${token1.symbol}.`);
+      
+      const delaySeconds = parseInt(await question(`Masukkan delay manual untuk transaksi ini dalam detik (misal: 10): `));
+      await delayWithCountdown(delaySeconds);
+
+      await performAddLiquidity(token0, token1, amount0Wei, amount1Wei, wallet);
+    } else {
+      logger.error("Pilihan mode tidak valid.");
+    }
   }
 
   rl.close();
