@@ -1,0 +1,27 @@
+{
+  "name": "uomi-testnet-bot",
+  "version": "1.0.0",
+  "description": "A Node.js and Ethers.js v5-based terminal bot with an interactive UI to automate transactions on the UOMI Testnet.",
+  "main": "kazmight.js",
+  "scripts": {
+    "start": "node kazmight.js"
+  },
+  "keywords": [
+    "nodejs",
+    "ethers",
+    "blockchain",
+    "uomi",
+    "testnet",
+    "bot",
+    "terminal-ui"
+  ],
+  "author": "Invictuslabs",
+  "license": "MIT",
+  "dependencies": {
+    "blessed": "^0.1.81",
+    "dotenv": "^16.4.5",
+    "ethers": "^5.7.2",
+    "figlet": "^1.7.0",
+    "moment": "^2.30.1"
+  }
+}
